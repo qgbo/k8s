@@ -1,0 +1,1392 @@
+# Source: consul/templates/tls-init-cleanup-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-tls-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded
+---
+# Source: consul/templates/tls-init-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-tls-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+# Source: consul/templates/tls-init-cleanup-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-tls-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded
+rules:
+- apiGroups: [""]
+  resources:
+    - secrets
+  resourceNames:
+    - consul-ca-cert
+    - consul-ca-key
+    - consul-server-cert
+  verbs:
+    - delete
+---
+# Source: consul/templates/tls-init-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-tls-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+- apiGroups: [""]
+  resources:
+    - secrets
+  verbs:
+    - create
+    - update
+    - get
+    - list
+---
+# Source: consul/templates/tls-init-cleanup-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-tls-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-tls-init-cleanup
+subjects:
+- kind: ServiceAccount
+  name: consul-tls-init-cleanup
+---
+# Source: consul/templates/tls-init-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-tls-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-tls-init
+subjects:
+- kind: ServiceAccount
+  name: consul-tls-init
+---
+# Source: consul/templates/server-acl-init-cleanup-job.yaml
+# This job deletes the server-acl-init job once it completes successfully.
+# It runs as a helm hook because it only needs to run when the server-acl-init
+# Job gets recreated which only happens during an install or upgrade.
+# We also utilize the helm hook-delete-policy to delete this job itself.
+# We want to delete the server-acl-init job because once it runs successfully
+# it's not needed and also because if it stays around then when users run
+# helm upgrade with values that change the spec of the job, Kubernetes errors
+# because the job spec is immutable. If the job is deleted, then a new job
+# is created and there's no error.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consul-server-acl-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init-cleanup
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    # If the hook fails then all that happens is we didn't delete the job.
+    # There's no reason for *this* job to stay around in that case so delete
+    # regardless of success.
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  template:
+    metadata:
+      name: consul-server-acl-init-cleanup
+      labels:
+        app: consul
+        component: server-acl-init-cleanup
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: consul-server-acl-init-cleanup
+      containers:
+        - name: server-acl-init-cleanup
+          image: hashicorp/consul-k8s-control-plane:1.3.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+              add:
+              - NET_BIND_SERVICE
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 100
+          command:
+            - consul-k8s-control-plane
+          args:
+            - delete-completed-job
+            - -log-level=info
+            - -log-json=false
+            - -k8s-namespace=consul3
+            - consul-server-acl-init
+          resources:
+            limits:
+              cpu: 50m
+              memory: 50Mi
+            requests:
+              cpu: 50m
+              memory: 50Mi
+---
+# Source: consul/templates/tls-init-cleanup-job.yaml
+# tls-init-cleanup job deletes Kubernetes secrets created by tls-init
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consul-tls-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": hook-succeeded
+    "helm.sh/hook-weight": "1"
+spec:
+  template:
+    metadata:
+      name: consul-tls-init-cleanup
+      labels:
+        app: consul
+        component: tls-init-cleanup
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: consul-tls-init-cleanup
+      containers:
+        - name: tls-init-cleanup
+          image: "hashicorp/consul:1.17.0"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+              add:
+              - NET_BIND_SERVICE
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 100
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          command:
+            - "/bin/sh"
+            - "-ec"
+            - |
+              curl -s -X DELETE --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/consul-ca-cert \
+                -H "Authorization: Bearer $( cat /var/run/secrets/kubernetes.io/serviceaccount/token )"
+              curl -s -X DELETE --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/consul-ca-key \
+                -H "Authorization: Bearer $( cat /var/run/secrets/kubernetes.io/serviceaccount/token )"
+              curl -s -X DELETE --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/consul-server-cert \
+                -H "Authorization: Bearer $( cat /var/run/secrets/kubernetes.io/serviceaccount/token )"
+          resources:
+            requests:
+              memory: "50Mi"
+              cpu: "50m"
+            limits:
+              memory: "50Mi"
+              cpu: "50m"
+---
+# Source: consul/templates/tls-init-job.yaml
+# tls-init job generate Consul cluster CA and certificates for the Consul servers
+# and creates Kubernetes secrets for them.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consul-tls-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: tls-init
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy":  hook-succeeded,before-hook-creation
+spec:
+  template:
+    metadata:
+      name: consul-tls-init
+      labels:
+        app: consul
+        component: tls-init
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: consul-tls-init
+      containers:
+        - name: tls-init
+          image: "hashicorp/consul-k8s-control-plane:1.3.0"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+              add:
+              - NET_BIND_SERVICE
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 100
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          workingDir: /tmp
+          command:
+            - "/bin/sh"
+            - "-ec"
+            - |
+              # Suppress globbing so we can interpolate the $NAMESPACE environment variable
+              # and use * at the start of the dns name when setting -additional-dnsname.
+              set -o noglob
+              consul-k8s-control-plane tls-init   -log-level=info  -log-json=false   -domain=consul  -days=730 -name-prefix=consul \
+                -k8s-namespace=${NAMESPACE} \
+                -additional-dnsname="consul-server" \
+                -additional-dnsname="*.consul-server" \
+                -additional-dnsname="*.consul-server.${NAMESPACE}" \
+                -additional-dnsname="consul-server.${NAMESPACE}" \
+                -additional-dnsname="*.consul-server.${NAMESPACE}.svc" \
+                -additional-dnsname="consul-server.${NAMESPACE}.svc" \
+                -additional-dnsname="*.server.dc1.consul" \
+                -dc=dc1
+          resources:
+            requests:
+              memory: "50Mi"
+              cpu: "50m"
+            limits:
+              memory: "50Mi"
+              cpu: "50m"
+---
+# Source: consul/templates/server-disruptionbudget.yaml
+# PodDisruptionBudget to prevent degrading the server cluster through
+# voluntary cluster changes.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: consul
+      release: "consul"
+      component: server
+---
+# Source: consul/templates/auth-method-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-auth-method
+  namespace: consul3
+  labels:
+    app: consul
+    component: auth-method
+---
+# Source: consul/templates/client-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-client
+  namespace: consul3
+  labels:
+    app: consul
+    component: client
+---
+# Source: consul/templates/server-acl-init-cleanup-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-server-acl-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init-cleanup
+---
+# Source: consul/templates/server-acl-init-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-server-acl-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init
+---
+# Source: consul/templates/server-serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+---
+# Source: consul/templates/auth-method-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: consul-auth-method
+  namespace: consul3
+  labels:
+    app: consul
+    component: auth-method
+  annotations:
+    kubernetes.io/service-account.name: consul-auth-method
+type: kubernetes.io/service-account-token
+---
+# Source: consul/templates/client-config-configmap.yaml
+# ConfigMap with extra configuration specified directly to the chart
+# for client agents only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consul-client-config
+  namespace: consul3
+  labels:
+    app: consul
+    component: client
+data:
+  client.json: |-
+    {
+      "encrypt": "R1xxlfZJBI/FLO1b6cM+ZuvelMgbg1N2X4v2Bu+erZM=",
+      "client_addr": "0.0.0.0",
+      "ports": {
+        "https": 8501,
+        "http": -1,
+        "grpc_tls": 8502,
+        "grpc": -1
+      },
+      "tls": {
+        "defaults": {
+          "verify_incoming": false,
+          "verify_outgoing": false,
+          "ca_file": "/consul/tls/ca/tls.crt"
+        },
+        "internal_rpc": {
+          "verify_server_hostname": false
+        }
+      },
+      "acl": {
+        "enabled": true,
+        "default_policy": "deny",
+        "down_policy": "extend-cache",
+        "tokens": {
+          "agent": "db91a68c-b7e7-4060-28ec-f079218742a0"
+        }
+      },
+      "locality": {"region":""}
+    }
+  log-level.json: |-
+    {
+    }
+  central-config.json: |-
+    {
+      "enable_central_service_config": true
+    }
+---
+# Source: consul/templates/server-config-configmap.yaml
+# StatefulSet to run the actual Consul server cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consul-server-config
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+data:
+  server.json: |
+    {
+      "encrypt": "R1xxlfZJBI/FLO1b6cM+ZuvelMgbg1N2X4v2Bu+erZM=",
+      "locality": {
+        "region": ""},
+      "bind_addr": "0.0.0.0",
+      "bootstrap_expect": 2,
+      "client_addr": "0.0.0.0",
+      "connect": {
+        "enabled": true
+      },
+      "datacenter": "dc1",
+      "data_dir": "/consul/data",
+      "domain": "consul",
+      "limits": {
+        "request_limits": {
+          "mode": "disabled",
+          "read_rate": -1,
+          "write_rate": -1
+        }
+      },
+      "ports": {
+        "grpc": -1,
+        "grpc_tls": 8502,
+        "serf_lan": 8301
+      },
+      "recursors": [],
+      "retry_join": ["consul-server.consul3.svc:8301"],
+      "server": true
+    }
+  acl-config.json: |-
+    {
+      "acl": {
+        "enabled": true,
+        "default_policy": "deny",
+        "down_policy": "extend-cache",
+        "enable_token_persistence": true,
+        "tokens": {
+          "initial_management": "db91a68c-b7e7-4060-28ec-f079218742a0",
+          "agent": "db91a68c-b7e7-4060-28ec-f079218742a0"
+        }
+      }
+    }
+  tls-config.json: |-
+    {
+      "tls": {
+        "internal_rpc": {
+          "verify_incoming": true,
+          "verify_server_hostname": true
+        },
+        "grpc": {
+          "verify_incoming": false
+        },
+        "defaults": {
+          "verify_outgoing": true,
+          "ca_file": "/consul/tls/ca/tls.crt",
+          "cert_file": "/consul/tls/server/tls.crt",
+          "key_file": "/consul/tls/server/tls.key"
+        }
+      },
+      "ports": {
+        "http": -1,
+        "https": 8501
+      }
+    }
+  ui-config.json: |-
+    {
+      "ui_config": {
+        "enabled": true
+      }
+    }
+  central-config.json: |-
+    {
+      "enable_central_service_config": true
+    }
+---
+# Source: consul/templates/auth-method-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: consul-auth-method
+  labels:
+    app: consul
+    component: auth-method
+rules:
+- apiGroups: [ "" ]
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+---
+# Source: consul/templates/server-clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs:
+  - get
+---
+# Source: consul/templates/auth-method-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: consul-authdelegator
+  labels:
+    app: consul
+    component: auth-method
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: "system:auth-delegator"
+subjects:
+- kind: ServiceAccount
+  name: consul-auth-method
+  namespace: consul3
+---
+# Source: consul/templates/auth-method-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: consul-auth-method
+  labels:
+    app: consul
+    component: auth-method
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: consul-auth-method
+subjects:
+- kind: ServiceAccount
+  name: consul-auth-method
+  namespace: consul3
+---
+# Source: consul/templates/server-clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: consul-server
+  labels:
+    app: consul
+    component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: consul-server
+subjects:
+- kind: ServiceAccount
+  name: consul-server
+  namespace: consul3
+---
+# Source: consul/templates/client-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-client
+  namespace: consul3
+  labels:
+    app: consul
+    component: client
+rules:
+  - apiGroups: [""]
+    resources:
+      - secrets
+    resourceNames:
+      - consul-client-acl-token
+    verbs:
+      - get
+---
+# Source: consul/templates/server-acl-init-cleanup-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-server-acl-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init-cleanup
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "delete"]
+---
+# Source: consul/templates/server-acl-init-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-server-acl-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init
+rules:
+- apiGroups: [ "" ]
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+- apiGroups: [ "" ]
+  resources:
+  - serviceaccounts
+  resourceNames:
+  - consul-auth-method
+  verbs:
+  - get
+---
+# Source: consul/templates/server-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+rules: []
+---
+# Source: consul/templates/client-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-client
+  namespace: consul3
+  labels:
+    app: consul
+    component: client
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-client
+subjects:
+  - kind: ServiceAccount
+    name: consul-client
+---
+# Source: consul/templates/server-acl-init-cleanup-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-server-acl-init-cleanup
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init-cleanup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-server-acl-init-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: consul-server-acl-init-cleanup
+---
+# Source: consul/templates/server-acl-init-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-server-acl-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-server-acl-init
+subjects:
+  - kind: ServiceAccount
+    name: consul-server-acl-init
+---
+# Source: consul/templates/server-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: consul-server
+subjects:
+  - kind: ServiceAccount
+    name: consul-server
+---
+# Source: consul/templates/dns-service.yaml
+# Service for Consul DNS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-dns
+  namespace: consul3
+  labels:
+    app: consul
+    component: dns
+spec:
+  type: ClusterIP
+  ports:
+    - name: dns-tcp
+      port: 53
+      protocol: "TCP"
+      targetPort: dns-tcp
+    - name: dns-udp
+      port: 53
+      protocol: "UDP"
+      targetPort: dns-udp
+  selector:
+    app: consul
+    release: "consul"
+    hasDNS: "true"
+---
+# Source: consul/templates/server-service.yaml
+# Headless service for Consul server DNS entries. This service should only
+# point to Consul servers. For access to an agent, one should assume that
+# the agent is installed locally on the node and the NODE_IP should be used.
+# If the node can't run a Consul agent, then this service can be used to
+# communicate directly to a server agent.
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+  annotations:
+spec:
+  clusterIP: None
+  # We want the servers to become available even if they're not ready
+  # since this DNS is also used for join operations.
+  publishNotReadyAddresses: true
+  ports:
+    - name: https
+      port: 8501
+      targetPort: 8501
+    - name: grpc
+      port: 8502
+      targetPort: 8502
+    - name: serflan-tcp
+      protocol: "TCP"
+      port: 8301
+      targetPort: 8301
+    - name: serflan-udp
+      protocol: "UDP"
+      port: 8301
+      targetPort: 8301
+    - name: serfwan-tcp
+      protocol: "TCP"
+      port: 8302
+      targetPort: 8302
+    - name: serfwan-udp
+      protocol: "UDP"
+      port: 8302
+      targetPort: 8302
+    - name: server
+      port: 8300
+      targetPort: 8300
+    - name: dns-tcp
+      protocol: "TCP"
+      port: 8600
+      targetPort: dns-tcp
+    - name: dns-udp
+      protocol: "UDP"
+      port: 8600
+      targetPort: dns-udp
+  selector:
+    app: consul
+    component: server
+---
+# Source: consul/templates/ui-service.yaml
+# UI Service for Consul Server
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-ui
+  namespace: consul3
+  labels:
+    app: consul
+    component: ui
+spec:
+  selector:
+    app: consul
+    release: "consul"
+    component: server
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8501
+---
+# Source: consul/templates/client-daemonset.yaml
+# DaemonSet to run the Consul clients on every node.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: consul-client
+  namespace: consul3
+  labels:
+    app: consul
+    component: client
+spec:
+  selector:
+    matchLabels:
+      app: consul
+      component: client
+      hasDNS: "true"
+  template:
+    metadata:
+      labels:
+        app: consul
+        component: client
+        hasDNS: "true"
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+        "consul.hashicorp.com/config-checksum": 7890e9b30f397be7c6ab1fce6032f261e3e2f9cb1f9f5131375de8d51e221c10
+    spec:
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: consul-client
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 100
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: consul-client-config
+        - name: consul-data
+          emptyDir:
+            medium: "Memory"
+        - name: consul-ca-cert
+          secret:
+            secretName: consul-ca-cert
+            items:
+            - key: tls.crt
+              path: tls.crt
+        - name: consul-ca-key
+          secret:
+            secretName: consul-ca-key
+            items:
+            - key: tls.key
+              path: tls.key
+        - name: consul-client-cert
+          emptyDir:
+            # We're using tmpfs here so that
+            # client certs are not written to disk
+            medium: "Memory"
+      containers:
+        - name: consul
+          image: "hashicorp/consul:1.17.0"
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - "/bin/sh"
+                  - "-ec"
+                  - |
+                    consul logout
+          env:
+            - name: CONSUL_HTTP_TOKEN_FILE
+              value: "/consul/login/acl-token"
+            - name: ADVERTISE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NODE
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_DISABLE_PERM_MGMT
+              value: "true"
+            - name: CONSUL_HTTP_ADDR
+              value: https://localhost:8501
+            - name: CONSUL_CACERT
+              value: /consul/tls/ca/tls.crt
+            
+          command:
+            - "/bin/sh"
+            - "-ec"
+            - |
+              CONSUL_FULLNAME="consul"
+              
+              cd /consul/tls/client
+              consul tls cert create -client \
+                -additional-ipaddress=${HOST_IP} \
+                -additional-ipaddress=${POD_IP} \
+                -dc=dc1 \
+                -domain=consul \
+                -ca=/consul/tls/ca/cert/tls.crt \
+                -key=/consul/tls/ca/key/tls.key
+              mv dc1-client-consul-0.pem tls.crt
+              mv dc1-client-consul-0-key.pem tls.key
+
+              exec /usr/local/bin/docker-entrypoint.sh consul agent \
+                -node="${NODE}" \
+                -advertise="${ADVERTISE_IP}" \
+                -bind=0.0.0.0 \
+                -client=0.0.0.0 \
+                -node-meta=host-ip:${HOST_IP} \
+                -node-meta=pod-name:${HOSTNAME} \
+                -hcl='leave_on_terminate = true' \
+                -hcl='ca_file = "/consul/tls/ca/tls.crt"' \
+                -hcl='cert_file = "/consul/tls/client/tls.crt"' \
+                -hcl='key_file = "/consul/tls/client/tls.key"' \
+                -hcl='verify_outgoing = true' \
+                -hcl='verify_incoming_rpc = true' \
+                -hcl='verify_server_hostname = true' \
+                -hcl='ports { https = 8501 }' \
+                -hcl='ports { http = -1 }' \
+                -hcl='ports { grpc = -1, grpc_tls = 8502 }' \
+                -config-dir=/consul/config \
+                -datacenter=dc1 \
+                -data-dir=/consul/data \
+                -retry-join="${CONSUL_FULLNAME}-server-0.${CONSUL_FULLNAME}-server.${NAMESPACE}.svc:8301" \
+                -retry-join="${CONSUL_FULLNAME}-server-1.${CONSUL_FULLNAME}-server.${NAMESPACE}.svc:8301" \
+                -domain=consul
+          volumeMounts:
+            - name: data
+              mountPath: /consul/data
+            - name: config
+              mountPath: /consul/config
+            - mountPath: /consul/login
+              name: consul-data
+              readOnly: true
+            - name: consul-ca-cert
+              mountPath: /consul/tls/ca
+              readOnly: true
+
+
+            - name: consul-client-cert
+              mountPath: /consul/tls/client
+            - name: consul-ca-cert
+              mountPath: /consul/tls/ca/cert
+              readOnly: true
+            - name: consul-ca-key
+              mountPath: /consul/tls/ca/key
+              readOnly: true
+          ports:
+            - containerPort: 8501
+              hostPort: 8501
+              name: https
+            - containerPort: 8502
+              hostPort: 8502
+              name: grpc
+            - containerPort: 8301
+              protocol: "TCP"
+              name: serflan-tcp
+            - containerPort: 8301
+              protocol: "UDP"
+              name: serflan-udp
+            - containerPort: 8600
+              name: dns-tcp
+              protocol: "TCP"
+            - containerPort: 8600
+              name: dns-udp
+              protocol: "UDP"
+          readinessProbe:
+            # NOTE(mitchellh): when our HTTP status endpoints support the
+            # proper status codes, we should switch to that. This is temporary.
+            exec:
+              command:
+                - "/bin/sh"
+                - "-ec"
+                - |
+                  curl \
+                    -k \
+                    https://127.0.0.1:8501/v1/status/leader \
+                  2>/dev/null | grep -E '".+"'
+          resources:
+            limits:
+              cpu: 100m
+              memory: 100Mi
+            requests:
+              cpu: 100m
+              memory: 100Mi
+          securityContext:
+            null
+  #  initContainers:
+  #  - name: client-tls-init
+  #    image: "hashicorp/consul:1.17.0"
+  #    env:
+  #    - name: HOST_IP
+  #      valueFrom:
+  #        fieldRef:
+  #          fieldPath: status.hostIP
+  #    - name: POD_IP
+  #      valueFrom:
+  #        fieldRef:
+  #          fieldPath: status.podIP
+  #    command:
+  #      - "/bin/sh"
+  #      - "-ec"
+  #      - |
+  #        cd /consul/tls/client
+  #        consul tls cert create -client \
+  #          -additional-ipaddress=${HOST_IP} \
+  #          -additional-ipaddress=${POD_IP} \
+  #          -dc=dc1 \
+  #          -domain=consul \
+  #          -ca=/consul/tls/ca/cert/tls.crt \
+  #          -key=/consul/tls/ca/key/tls.key
+  #        mv dc1-client-consul-0.pem tls.crt
+  #        mv dc1-client-consul-0-key.pem tls.key
+  #    volumeMounts:
+  #      - name: consul-client-cert
+  #        mountPath: /consul/tls/client
+  #      - name: consul-ca-cert
+  #        mountPath: /consul/tls/ca/cert
+  #        readOnly: true
+  #      - name: consul-ca-key
+  #        mountPath: /consul/tls/ca/key
+  #        readOnly: true
+  #    resources:
+  #      requests:
+  #        memory: "50Mi"
+  #        cpu: "50m"
+  #      limits:
+  #        memory: "50Mi"
+  #        cpu: "50m"
+  #    securityContext:
+  #      null
+---
+# Source: consul/templates/server-statefulset.yaml
+# StatefulSet to run the actual Consul server cluster.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: consul-server
+  namespace: consul3
+  labels:
+    app: consul
+    component: server
+spec:
+  serviceName: consul-server
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: consul
+      component: server
+      hasDNS: "true"
+  template:
+    metadata:
+      labels:
+        app: consul
+        component: server
+        hasDNS: "true"
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+        "consul.hashicorp.com/config-checksum": b13d02fd190835fe2fe77433e48c29750f3346d6e594358fa3447a2bfedaa6c6
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: consul
+                  release: "consul"
+                  component: server
+              topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      serviceAccountName: consul-server
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 100
+      volumes:
+        - name: data-consul3
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: consul-server-config
+        - name: consul-ca-cert
+          secret:
+            secretName: consul-ca-cert
+            items:
+            - key: tls.crt
+              path: tls.crt
+        - name: consul-server-cert
+          secret:
+            secretName: consul-server-cert
+      containers:
+        - name: consul
+          image: "hashicorp/consul:1.17.0"
+          imagePullPolicy: 
+          env:
+            - name: ADVERTISE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONSUL_DISABLE_PERM_MGMT
+              value: "true"
+            - name: CONSUL_HTTP_ADDR
+              value: https://localhost:8501
+            - name: CONSUL_CACERT
+              value: /consul/tls/ca/tls.crt
+          command:
+            - "/bin/sh"
+            - "-ec"
+            - |
+              exec /usr/local/bin/docker-entrypoint.sh consul agent \
+                -advertise="${ADVERTISE_IP}" \
+                -config-dir=/consul/config \
+          volumeMounts:
+            - name: data-consul3
+              mountPath: /consul/data
+            - name: config
+              mountPath: /consul/config
+            - name: consul-ca-cert
+              mountPath: /consul/tls/ca/
+              readOnly: true
+            - name: consul-server-cert
+              mountPath: /consul/tls/server
+              readOnly: true
+          ports:
+            - name: https
+              containerPort: 8501
+            - name: grpc
+              containerPort: 8502
+              protocol: "TCP"
+            - name: serflan-tcp
+              containerPort: 8301
+              protocol: "TCP"
+            - name: serflan-udp
+              containerPort: 8301
+              protocol: "UDP"
+            - name: serfwan-tcp
+              containerPort: 8302
+              protocol: "TCP"
+            - name: serfwan-udp
+              containerPort: 8302
+              protocol: "UDP"
+            - name: server
+              containerPort: 8300
+            - name: dns-tcp
+              containerPort: 8600
+              protocol: "TCP"
+            - name: dns-udp
+              containerPort: 8600
+              protocol: "UDP"
+          readinessProbe:
+            # NOTE(mitchellh): when our HTTP status endpoints support the
+            # proper status codes, we should switch to that. This is temporary.
+            exec:
+              command:
+                - "/bin/sh"
+                - "-ec"
+                - |
+                  curl -k  https://127.0.0.1:8501/v1/status/leader  2>/dev/null | grep -E '".+"'
+            failureThreshold: 2
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            successThreshold: 1
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: 100m
+              memory: 200Mi
+            requests:
+              cpu: 100m
+              memory: 200Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+              add:
+              - NET_BIND_SERVICE
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 100
+---
+# Source: consul/templates/server-acl-init-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consul-server-acl-init
+  namespace: consul3
+  labels:
+    app: consul
+    component: server-acl-init
+spec:
+  template:
+    metadata:
+      name: consul-server-acl-init
+      labels:
+        app: consul
+        component: server-acl-init
+      annotations:
+        "consul.hashicorp.com/connect-inject": "false"
+        "consul.hashicorp.com/mesh-inject": "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: consul-server-acl-init
+      volumes:
+      - name: consul-ca-cert
+        secret:
+          secretName: consul-ca-cert
+          items:
+          - key: tls.crt
+            path: tls.crt
+      containers:
+      - name: server-acl-init-job
+        image: hashicorp/consul-k8s-control-plane:1.3.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
+          runAsUser: 100
+        env:
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        # Extract the Vault namespace from the Vault agent annotations.
+        - name: CONSUL_ADDRESSES
+          value: consul-server.consul3.svc
+        - name: CONSUL_GRPC_PORT
+          value: "8502"
+        - name: CONSUL_HTTP_PORT
+          value: "8501"
+        - name: CONSUL_DATACENTER
+          value: dc1
+        - name: CONSUL_API_TIMEOUT
+          value: 5s
+        - name: CONSUL_USE_TLS
+          value: "true"
+        - name: CONSUL_CACERT_FILE
+          value: "/consul/tls/ca/tls.crt"
+        volumeMounts:
+        - name: consul-ca-cert
+          mountPath: /consul/tls/ca
+          readOnly: true
+        command:
+        - "/bin/sh"
+        - "-ec"
+        - |
+          CONSUL_FULLNAME="consul"
+          consul-k8s-control-plane server-acl-init \
+            -log-level=info \
+            -log-json=false \
+            -resource-prefix=${CONSUL_FULLNAME} \
+            -k8s-namespace=consul3 \
+            -set-server-tokens=true \
+            -secrets-backend=kubernetes \
+            -allow-dns=true \
+            -acl-binding-rule-selector=serviceaccount.name!=default \
+        resources:
+          limits:
+            cpu: 50m
+            memory: 50Mi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+---
+# Source: consul/templates/ui-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: consul-ui
+  namespace: consul3
+  labels:
+    app: consul
+    component: ui
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: 
+    http:
+      paths:
+      - backend:
+          service:
+            name: consul-ui
+            port:
+              number: 443
+        path: /ui
+        pathType: Prefix
+      - backend:
+          service:
+            name: consul-ui
+            port:
+              number: 443
+        path: /v1
+        pathType: Prefix
+
+
